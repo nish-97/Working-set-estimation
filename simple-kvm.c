@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 #include <linux/kvm.h>
 
 /* CR0 bits */
@@ -221,7 +222,7 @@ void return_bitmap(struct vm* vm,struct kvm_dirty_log log){
 			// one_entry++;
 		}
 		total_dirty+= count;
-		printf("Number of dirty pages in %d - %d range are: %d\n",i*64,i*64+63,count);
+		// printf("Number of dirty pages in %d - %d range are: %d\n",i*64,i*64+63,count);
 			// printf("Bitmap value for page number %d - %d is %lx\n",(i*64),(i*64+63),*(z)); //32MB VM -> 16 pages
 	} 
 		printf("Total number of dirty pages are: %d/%d\n",total_dirty,i*64);
@@ -239,11 +240,13 @@ void return_bitmap(struct vm* vm,struct kvm_dirty_log log){
 
 int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 {
+
 	struct kvm_regs regs;
 	uint64_t memval = 0;
 	struct kvm_dirty_log log;
 	log.slot = 0;
-	log.dirty_bitmap =(char *)malloc(16);
+	log.dirty_bitmap =(char *)malloc(32768);
+	srand(time(0));
 	printf("The value at 0x3000 is %x\n",*((uint32_t *)(uintptr_t)(0x3000+vm->mem)));
 
 	for (;;) {
@@ -338,7 +341,33 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				*gva_pointer = 6;
 				continue;
 			}
+			
+			//handle HC_gvafromaddress_ul()
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
+			    && vcpu->kvm_run->io.port == 0xFE) {	
+				num_out_exits++;
+				uint32_t *p = (uint32_t *)((char *)vcpu->kvm_run + vcpu->kvm_run->io.data_offset);
+				uint32_t gva = (uintptr_t)(*p); 
+				uint32_t *gva_pointer = (uint32_t *)(vm->mem + *p);
+				printf("The desired guest virtual address is_ul: %x\n",gva);
+				*gva_pointer = 6;
+				continue;
+			}
 
+			//handle HC_getRandom()
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_IN
+			    && vcpu->kvm_run->io.port == 0x88) {	
+				num_in_exits++;
+				uint32_t *p = (uint32_t *)((char *)vcpu->kvm_run + vcpu->kvm_run->io.data_offset);
+				*p = (uint32_t)rand()%150;
+				printf("The random value generated is:%d\n",*p);
+				// uint32_t gva = (uintptr_t)(*p); 
+				// uint32_t *gva_pointer = (uint32_t *)(vm->mem + *p);
+				// printf("The desired guest virtual address is_ul: %x\n",gva);
+				// *gva_pointer = 6;
+				continue;
+			}
+			
 			//handle HC_gvaToHva()
 			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
 			    && vcpu->kvm_run->io.port == 0x4D) {	
@@ -392,7 +421,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 		return 0;
 	}
 
-	memcpy(&memval, &vm->mem[0x400], sz);
+	memcpy(&memval, &vm->mem[0x100000], sz);
 	if (memval != 42) {
 		printf("Wrong result: memory at 0x400 is %lld\n",
 		       (unsigned long long)memval);
@@ -577,7 +606,7 @@ static void setup_64bit_code_segment(struct kvm_sregs *sregs)
 static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs)
 {
 	uint64_t pml4_addr = 0x2000;
-	uint64_t *pml4 = (void *)(vm->mem + pml4_addr);
+	uint64_t *pml4 = (void *)(vm->mem + pml4_addr);  
 
 	uint64_t pdpt_addr = 0x3000;
 	uint64_t *pdpt = (void *)(vm->mem + pdpt_addr);
@@ -587,34 +616,47 @@ static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs)
 
 	uint64_t pt_addr = 0x5000;
 	uint64_t *pt = (void *)(vm->mem + pt_addr);
-	
-	pml4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pdpt_addr;
-	pdpt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pd_addr;
-	// for(int j = 0; j<vm->num_pages ; j++){
-	// 	pd[j] = PDE64_PRESENT | PDE64_RW | PDE64_USER | (pt_addr + 0x1000*j);
-	// 	pt = (void *)(vm->mem + pt_addr + j*0x1000);
-	// 	for(int i = 0; i<vm->num_pages; i++){
-	// 		uint64_t offset = (j*vm->num_pages + i) * 0x1000;
-	// 		// pd[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS; //1MB starting(1MB)
-	// 		pt[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER /*| PDE64_PS*/ | (offset);//starting 0 allocating PTEs in the page table for 4KB page
-	// 		// printf("Value at %x is ")
-	// 		// pt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER| PDE64_PS;   //pages starting from 1MB
-	// 	}
-	// }
-	// for(int j = 16; j<vm->num_pages; j++){
-	// for(int j = 0; j<vm->num_pages ; j++){
-		pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | (pt_addr);
-		// pt = (void *)(vm->mem + pt_addr + j*0x1000);
-		for(int i = 0; i<vm->num_pages; i++){
-			uint64_t offset = i * 0x1000;
+
+	//below is the page table setup for upto 1GB VM	
+	pml4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pdpt_addr;  //setting up first level of the page table
+	pdpt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pd_addr;    //setting up second level of the page table
+	for(int j = 0; j<512 ; j++){  //512 is the number of PTEs per page for a 4KB
+		pd[j] = PDE64_PRESENT | PDE64_RW | PDE64_USER | (pt_addr + 0x1000*j);  //starting 0x5000 allocating PTEs in the page table for 4KB page in the third level page table
+		for(int i = 0; i<512; i++){
+			uint64_t offset = (j*512+ i) * 0x1000;
+			pt[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER /*| PDE64_PS*/ | (offset);  //starting 0 allocating PTEs in the page table for 4KB page in last level page table
 			// pd[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS; //1MB starting(1MB)
-			pt[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER /*| PDE64_PS*/ | (offset);//starting 0 allocating PTEs in the page table for 4KB page
 			// printf("Value at %x is ")
 			// pt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER| PDE64_PS;   //pages starting from 1MB
 		}
+		// printf("This is the third level completed %d\n",j);
+		pt = (void *)(vm->mem + pt_addr + (j+1)*0x1000);  //point pd to next page for pt
+	}
+
+	//below is the page table setup for a 2MB VM
+	// pml4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pdpt_addr;  //setting up first level of the page table
+	// pdpt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pd_addr;    //setting up second level of the page table
+	// pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | (pt_addr);  //starting 0x5000 allocating PTEs in the page table for 4KB page in the third level page table
+	// for(int j = 0; j<512 ; j++){  //512 is the number of PTEs per page for a 4KB
+	// 	uint64_t offset = (j) * 0x1000;
+	// 	pt[j] = PDE64_PRESENT | PDE64_RW | PDE64_USER /*| PDE64_PS*/ | (offset);  //starting 0 allocating PTEs in the page table for 4KB page in last level page table
+	// }
+		
+	// for(int j = 16; j<vm->num_pages; j++){
+	// for(int j = 0; j<vm->num_pages ; j++){
+		// pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | (pt_addr);
+		// // pt = (void *)(vm->mem + pt_addr + j*0x1000);
+		// for(int i = 0; i<vm->num_pages; i++){
+		// 	uint64_t offset = i * 0x1000;
+		// 	// pd[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS; //1MB starting(1MB)
+		// 	pt[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER /*| PDE64_PS*/ | (offset);//starting 0 allocating PTEs in the page table for 4KB page
+		// 	// printf("Value at %x is ")
+		// 	// pt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER| PDE64_PS;   //pages starting from 1MB
+		// }
 	// }
 	// 	pd[j] = PDE64_PRESENT | PDE64_RW | PDE64_USER;
 	// }
+
 	sregs->cr3 = pml4_addr;
 	sregs->cr4 = CR4_PAE;
 	sregs->cr0
@@ -699,11 +741,10 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
-	int vm_size = 0x200000;
-	// int vm_size = 0x40000000;
-	int num_pages = vm_size/0x1000;
-	vm_init(&vm, vm_size,num_pages);  //2MB
-	// vm_init(&vm, 0x2000000);  //32MB
+	// int vm_size = 0x200000; //2MB
+	int vm_size = 0x40000000;  //1GB
+	int num_pages = vm_size/0x1000;  //2^18 for 1GB and 2^9 for 2MB 
+	vm_init(&vm, vm_size,num_pages);  
 	vcpu_init(&vm, &vcpu);
 
 	switch (mode) {
