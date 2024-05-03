@@ -1,4 +1,4 @@
-CFLAGS = -Wall -Wextra -Werror -O0 -Werror=array-bounds=0
+CFLAGS = -Wall -g -Wextra -Werror -O0 -Werror=array-bounds=0
 
 .PHONY: run
 run: simple-kvm

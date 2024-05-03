@@ -68,6 +68,7 @@ struct vm {
 	int dev_fd;
 	int vm_fd;
 	char *mem;
+	int num_pages;
 };
 
 struct vcpu {
@@ -79,7 +80,7 @@ uint32_t num_exits = 0;
 uint32_t num_out_exits = 0, num_in_exits = 0;
 
 char *final_line = NULL;
-void vm_init(struct vm *vm, size_t mem_size)
+void vm_init(struct vm *vm, size_t mem_size, int num_pages)
 {//vm is being initialised here
 	final_line = (char *) malloc(100 * sizeof(char)); 
 	int kvm_version;
@@ -119,7 +120,10 @@ void vm_init(struct vm *vm, size_t mem_size)
 	if (vm->mem == MAP_FAILED) {
 		perror("mmap mem");
 		exit(1);
+	
 	}
+	vm->num_pages = num_pages;
+	// printf("num pages %d\n",vm->num_pages);
 
 	madvise(vm->mem, mem_size, MADV_MERGEABLE);
 	//setting memory values
@@ -199,8 +203,9 @@ void return_bitmap(struct vm* vm,struct kvm_dirty_log log){
 		exit(1);
 	}
 	uint64_t *z =(uint64_t *)(log.dirty_bitmap);
-	// uint64_t *d;
-	for(int i = 0 ; i < 8 ; i++,z++){
+	int total_dirty = 0,i;
+
+	for(i = 0 ; i < vm->num_pages/64 ; i++,z++){
 		// printf("i reached here\n");
 		// d = (uint64_t *)log.dirty_bitmap;
 		// printf("Bitmap value is %lx\n",*d);
@@ -215,9 +220,11 @@ void return_bitmap(struct vm* vm,struct kvm_dirty_log log){
 			copy = copy>>1;
 			// one_entry++;
 		}
-		printf("Number of dirty pages are: %d\n",count);
+		total_dirty+= count;
+		printf("Number of dirty pages in %d - %d range are: %d\n",i*64,i*64+63,count);
 			// printf("Bitmap value for page number %d - %d is %lx\n",(i*64),(i*64+63),*(z)); //32MB VM -> 16 pages
 	} 
+		printf("Total number of dirty pages are: %d/%d\n",total_dirty,i*64);
 }
 
 // void initialize_bitmap(struct vm* vm){
@@ -316,7 +323,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				strcpy(r,final_line); //write it to guest's char pointer address
 				// clear_pagetable(vm);  //clear the ACCESSED bits of pagetable
 				// clear_long_mode(vm);
-				// return_bitmap(vm,log);
+				return_bitmap(vm,log);
 				continue;
 			}
 
@@ -353,7 +360,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				}
 				// clear_pagetable(vm);  //clear the ACCESSED bits of pagetable
 				// clear_long_mode(vm);
-				return_bitmap(vm,log);
+				// return_bitmap(vm,log);
 				continue;
 			}
 			break;
@@ -361,7 +368,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 		case KVM_EXIT_SHUTDOWN:
 			// set_long_mode(vm);
 			// set_pagetable(vm);
-			printf("I reached here once\n");
+			printf("I reached here because the VM shutdowns abruptly\n");
 			break;
 			//fall through
 		default:
@@ -581,16 +588,33 @@ static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs)
 	uint64_t pt_addr = 0x5000;
 	uint64_t *pt = (void *)(vm->mem + pt_addr);
 	
-
 	pml4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pdpt_addr;
 	pdpt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pd_addr;
-	pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pt_addr;
-	for(int i = 0; i<512; i++){
-		uint64_t offset = i * 0x1000;
-		// pd[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS; //1MB starting(1MB)
-		pt[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER /*| PDE64_PS*/ | (offset);//1MB starting(1MB)
-		// pt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER| PDE64_PS;   //pages starting from 1MB
-	}
+	// for(int j = 0; j<vm->num_pages ; j++){
+	// 	pd[j] = PDE64_PRESENT | PDE64_RW | PDE64_USER | (pt_addr + 0x1000*j);
+	// 	pt = (void *)(vm->mem + pt_addr + j*0x1000);
+	// 	for(int i = 0; i<vm->num_pages; i++){
+	// 		uint64_t offset = (j*vm->num_pages + i) * 0x1000;
+	// 		// pd[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS; //1MB starting(1MB)
+	// 		pt[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER /*| PDE64_PS*/ | (offset);//starting 0 allocating PTEs in the page table for 4KB page
+	// 		// printf("Value at %x is ")
+	// 		// pt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER| PDE64_PS;   //pages starting from 1MB
+	// 	}
+	// }
+	// for(int j = 16; j<vm->num_pages; j++){
+	// for(int j = 0; j<vm->num_pages ; j++){
+		pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | (pt_addr);
+		// pt = (void *)(vm->mem + pt_addr + j*0x1000);
+		for(int i = 0; i<vm->num_pages; i++){
+			uint64_t offset = i * 0x1000;
+			// pd[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS; //1MB starting(1MB)
+			pt[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER /*| PDE64_PS*/ | (offset);//starting 0 allocating PTEs in the page table for 4KB page
+			// printf("Value at %x is ")
+			// pt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER| PDE64_PS;   //pages starting from 1MB
+		}
+	// }
+	// 	pd[j] = PDE64_PRESENT | PDE64_RW | PDE64_USER;
+	// }
 	sregs->cr3 = pml4_addr;
 	sregs->cr4 = CR4_PAE;
 	sregs->cr0
@@ -675,8 +699,10 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
-
-	vm_init(&vm, 0x200000);  //2MB
+	int vm_size = 0x200000;
+	// int vm_size = 0x40000000;
+	int num_pages = vm_size/0x1000;
+	vm_init(&vm, vm_size,num_pages);  //2MB
 	// vm_init(&vm, 0x2000000);  //32MB
 	vcpu_init(&vm, &vcpu);
 

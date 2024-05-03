@@ -65,13 +65,27 @@ void HC_gvafromaddress(int *gva)
 	// return gva;	
 }
 
-void matmul(unsigned long long mat1[65536], unsigned long long mat2[65536])
+// void matmul_intarray(int mat1[131072], int mat2[131072])
+// {
+//     int rslt[131072];
+//     for (int i = 0; i < 131072; i+=1024) {
+//         for (int j = 0; j < 131072; j+=1024) {
+//             rslt[i] = 0;
+//             for (int k = 0; k < 131072; k+=1024) {
+//                 rslt[i] = (mat1[i]++) * (mat2[k]--);
+// 				rslt[i]++;
+//             }
+//         }
+//     }
+// }
+
+void matmul_longarray(unsigned long long mat1[16384], unsigned long long mat2[16384])
 {
-    unsigned long long rslt[65536];
-    for (int i = 0; i < 65536; i+=1024) {
-        for (int j = 0; j < 65536; j+=1024) {
+    int rslt[16384];
+    for (int i = 0; i < 16384; i+=512) {
+        for (int j = 0; j < 16384; j+=512) {
             rslt[i] = 0;
-            for (int k = 0; k < 65536; k+=1024) {
+            for (int k = 0; k < 16384; k+=512) {
                 rslt[i] = (mat1[i]++) * (mat2[k]--);
 				rslt[i]++;
             }
@@ -86,11 +100,11 @@ void
 __attribute__((noreturn))
 __attribute__((section(".start")))
 _start(void) {
-	const char *p;
 	// int a;
 	// printf("The address of a is %p",&a);
-	for (p = "Hello 695!\n"; *p; ++p)
-		HC_print8bit(*p);
+	// const char *p;
+	// for (p = "Hello 695!\n"; *p; ++p)
+	// 	HC_print8bit(*p);
 
 	/*---Your submission will fail the testcases if you modify this section---*/
 	HC_print32bit(4294967295);
@@ -99,33 +113,37 @@ _start(void) {
 	num_exits_a = HC_numExits();
 
 	//this code is written to test the dirty pages
-	// int i,/*c[65536][65535],b[65535][65535]*/count;
-	unsigned long long b[65536], c[65536];
+	// int i,/*c[131072][65535],b[65535][65535]*/count;
+	// int b_i[131072], c_i[131072]; //512KB*2
+	unsigned long long b_u[16384], c_u[16384]; //512KB*2
 	// int a[5][5] = {{1,2,3,4,5},{1,2,3,4,5},{1,2,3,4,5},{1,2,3,4,5},{1,2,3,4,5}};
 	// int b[5][5] = {{1,2,3,4,5},{1,2,3,4,5},{1,2,3,4,5},{1,2,3,4,5},{1,2,3,4,5}};
 
-	matmul(c,b);
-	// for(i = 0; i < 65536; i+=1024){
+	// matmul_intarray(c_i,b_i); //this code simulates a code similar to matrix multiplication
+	// for(i = 0; i < 131072; i+=1024){
 	//  	c[i] = i;
 	// 	if(c[i] < 0)
 	// 		count++;
 	// }
-	// HC_gvafromaddress(&b[1]);
+	// HC_gvafromaddress(&b[0]);
 	// HC_gvafromaddress(&c[0]);
 	char *str = "CS695 Assignment 2\n";
-
-	num_exits_b = HC_numExits();
 	HC_printStr(str);
 
-	// for(i = 0; i < 65536; i+=1024){
-	// 	b[i] = i + 1;
-	// 	if(b[i] == 0)
+	num_exits_b = HC_numExits();
+
+	// for(int i = 0; i < 131072; i+=1024){
+	// 	b_i[i] = i + 1;
+	// 	if(b_i[i] == 6)
 	// 		count++;
 	// }
 
 	HC_print32bit(num_exits_a);
 	HC_print32bit(num_exits_b);
 
+	*(long *) 0x40000 = 72;  //writing at 256KB memory address
+	*(long *) 0x41000 = 62;  //writing at memory address 1MB
+	*(long *) 0x42000 = 62;  //writing at memory address 1MB
 	char *firststr = HC_numExitsByType();
 	uint32_t hva;
 	// hva = HC_gvaToHva(8192);  //0x2000
@@ -133,11 +151,10 @@ _start(void) {
 	hva = HC_gvaToHva(12288); //0x3000
 	// hva = HC_gvaToHva(16384); //0x4000
 	// hva = HC_gvaToHva(16392); //0x4008
-	*(long *) 0x9000 = 62;  //writing at memory address 1MB
 	HC_print32bit(hva);
 	// hva = HC_gvaToHva(4294967295);
 	// HC_print32bit(hva);
-	*(long *) 0x10000 = 72;  //writing at memory address 1MB
+	matmul_longarray(b_u,c_u);
 	char *secondstr = HC_numExitsByType();
 
 	HC_printStr(firststr);
